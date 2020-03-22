@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 3a05dab02f85d3c80c96d38ad2752b4e486cdf52f83d94c87b8ea59d2c91cf52
+-- hash: d0ec91c2945f267c08f381dcccf399ac6b73748c33f1b0fbf67047747be0c0a6
 
 name:           kdtree
 version:        0.1.0.0
@@ -34,6 +34,7 @@ library
       src
   build-depends:
       base >=4.7 && <5
+    , random
     , vector
     , vector-th-unbox
   default-language: Haskell2010
@@ -44,10 +45,11 @@ executable kdtree-exe
       Paths_kdtree
   hs-source-dirs:
       app
-  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+  ghc-options: -O2 -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       base >=4.7 && <5
     , kdtree
+    , random
     , vector
     , vector-th-unbox
   default-language: Haskell2010
@@ -63,6 +65,7 @@ test-suite kdtree-test
   build-depends:
       base >=4.7 && <5
     , kdtree
+    , random
     , vector
     , vector-th-unbox
   default-language: Haskell2010
