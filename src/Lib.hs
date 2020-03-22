@@ -4,14 +4,14 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
 
-module Lib
-    ( someFunc
-    ) where
+module Lib where
 
 import Data.IORef
 import qualified Data.Vector.Unboxed as V
 import qualified Data.Vector.Unboxed.Mutable as V
 import qualified Data.Vector.Unboxed.Deriving as V
+import qualified Data.List as L
+import qualified Data.Set as S
 import Data.Word
 
 import System.Random
@@ -21,7 +21,7 @@ import GHC.Generics
 data Point = Point
   { x :: {-# UNPACK #-} !Word32
   , y :: {-# UNPACK #-} !Word32
-  } deriving (Eq, Show)
+  } deriving (Eq, Ord, Show)
 
 V.derivingUnbox "Point"
   [t| Point -> (Word32, Word32) |]
@@ -52,7 +52,9 @@ overlapAABB
 
 splitAABB :: AABB -> (AABB, AABB, AABB, AABB)
 splitAABB (AABB (Point x1 y1) (Point x2 y2))
-  = ( (AABB (Point x1 y1) (Point xh yh))
+  | x1 == xh || y1 == yh = error "AABB too small"
+  | otherwise =
+    ( (AABB (Point x1 y1) (Point xh yh))
     , (AABB (Point xh y1) (Point x2 yh))
     , (AABB (Point x1 yh) (Point xh y2))
     , (AABB (Point xh yh) (Point x2 y2))
@@ -64,7 +66,7 @@ splitAABB (AABB (Point x1 y1) (Point x2 y2))
 --------------------------------------------------------------------------------
 
 maxLeafPoints :: Word8
-maxLeafPoints = 10
+maxLeafPoints = 100
 
 data Node
   = Node AABB QT QT QT QT 
@@ -107,9 +109,13 @@ insert p qt = do
                   aabb <- aabbForQT q4
                   if insideAABB aabb p
                     then insert p q4
-                    else pure ()
+                    else error $ "Out of bounds (node): " <> show aabb <> ", " <> show p
 
     (Leaf aabb cntRef points) -> do
+      if insideAABB aabb p
+        then pure ()
+        else error $ "Out of bounds (leaf): " <> show aabb <> ", " <> show p
+        
       cnt <- readIORef cntRef
     
       if cnt < maxLeafPoints
@@ -155,16 +161,24 @@ query aabb qt = do
 
 someFunc :: IO ()
 someFunc = do
-  qt <- empty (AABB (Point 0 0) (Point 100000 100000))
+  qt <- empty (AABB (Point 0 0) (Point 1000 1000))
 
-  sequence_ $ replicate 1000000 $ do
-    x <- randomRIO (0, 100000)
-    y <- randomRIO (0, 100000)
+  rps <- flip traverse [0..1000] $ \_ -> do
+    x <- randomRIO (0, 999)
+    y <- randomRIO (0, 999)
 
-    insert (Point x y) qt
+    pure (Point x y)
 
-  ps <- query (AABB (Point 100 100) (Point 1000 1000)) qt
-  print ps
+  sequence_ $ flip map rps $ \p -> insert p qt
+
+  let aabb = AABB (Point 100 100) (Point 200 200)
+
+  ps1 <- L.sort <$> query aabb qt
+  ps2 <- fmap L.sort $ pure $ filter (insideAABB aabb) rps
+
+  print ps1
+  print ps2
 
   print "Done"
+  print (ps1 == ps2)
   

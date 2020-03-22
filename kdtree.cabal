@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: d0ec91c2945f267c08f381dcccf399ac6b73748c33f1b0fbf67047747be0c0a6
+-- hash: d3b85d126421b8b65b70cb1930a8d15937c2e8bfb8e55fdb5266973125c557f2
 
 name:           kdtree
 version:        0.1.0.0
@@ -34,6 +34,7 @@ library
       src
   build-depends:
       base >=4.7 && <5
+    , containers
     , random
     , vector
     , vector-th-unbox
@@ -48,6 +49,7 @@ executable kdtree-exe
   ghc-options: -O2 -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       base >=4.7 && <5
+    , containers
     , kdtree
     , random
     , vector
@@ -64,6 +66,7 @@ test-suite kdtree-test
   ghc-options: -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       base >=4.7 && <5
+    , containers
     , kdtree
     , random
     , vector
