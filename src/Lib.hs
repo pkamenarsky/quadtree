@@ -235,7 +235,8 @@ delete p qt = do
     Leaf aabb cntRef points -> if insideAABB aabb p
       then do
         cnt <- readMutVar cntRef
-        i <- find points (fromIntegral cnt) p
+        i   <- find points (fromIntegral cnt) p
+
         case i of
           Just i' -> do
             remove points (fromIntegral cnt) i'
@@ -245,7 +246,6 @@ delete p qt = do
       else
         pure False
 
-    -- TODO: if this is inside, point must be inside, no need for checks
     Node aabb cntRef q1 q2 q3 q4 -> if insideAABB aabb p
       then do
         d1 <- delete p q1
@@ -253,12 +253,12 @@ delete p qt = do
         d3 <- unlessDef True d2 (delete p q3)
         d4 <- unlessDef True d3 (delete p q4)
 
-        if (d1 || d2 || d3 || d4)
+        if d1 || d2 || d3 || d4
           then do
             cnt <- readMutVar cntRef
             writeMutVar cntRef (cnt - 1)
 
-            when (fromIntegral (cnt - 1) <= maxLeafPoints) $ do
+            when (cnt - 1 <= fromIntegral maxLeafPoints) $ do
               points  <- VM.new (fromIntegral maxLeafPoints)
               collCnt <- collectPoints points 0 qt
               cntRef  <- newMutVar (fromIntegral collCnt)
