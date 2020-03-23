@@ -1,4 +1,5 @@
--- {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 -- {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE TemplateHaskell #-}
@@ -6,12 +7,17 @@
 
 module Lib where
 
+import Control.Monad (replicateM)
+
 import Data.IORef
+import qualified Data.ByteString.Lazy as BL
 import qualified Data.Vector.Unboxed as V
-import qualified Data.Vector.Unboxed.Mutable as V
+import qualified Data.Vector.Unboxed.Mutable as VM
 import qualified Data.Vector.Unboxed.Deriving as V
+import qualified Data.Vector.Serialize as V
 import qualified Data.List as L
 import qualified Data.Set as S
+import qualified Data.Serialize as B
 import Data.Word
 
 import System.Random
@@ -21,7 +27,7 @@ import GHC.Generics
 data Point = Point
   { x :: {-# UNPACK #-} !Word32
   , y :: {-# UNPACK #-} !Word32
-  } deriving (Eq, Ord, Show)
+  } deriving (Eq, Ord, Show, Generic, B.Serialize)
 
 V.derivingUnbox "Point"
   [t| Point -> (Word32, Word32) |]
@@ -31,7 +37,7 @@ V.derivingUnbox "Point"
 data AABB = AABB
   { nw :: {-# UNPACK #-} !Point
   , se :: {-# UNPACK #-} !Point
-  } deriving (Eq, Show)
+  } deriving (Eq, Show, Generic, B.Serialize)
 
 V.derivingUnbox "AABB"
   [t| AABB -> (Point, Point) |]
@@ -69,16 +75,37 @@ maxLeafPoints :: Word8
 maxLeafPoints = 100
 
 data Node
-  = Node AABB QT QT QT QT 
-  | Leaf AABB (IORef Word8) (V.IOVector Point)
+  = Node !AABB !QT !QT !QT !QT 
+  | Leaf !AABB !(IORef Word8) !(VM.IOVector Point)
 
 type QT = IORef Node
+
+data INode
+  = INode AABB INode INode INode INode
+  | ILeaf AABB (V.Vector Point)
+  deriving (Generic, B.Serialize)
+
+freeze :: QT -> IO INode
+freeze qt = do
+  node <- readIORef qt
+
+  case node of
+    Leaf aabb cntRef points -> do
+      cnt <- readIORef cntRef
+      points' <- V.freeze $ VM.slice 0 (fromIntegral cnt) points
+      pure $ ILeaf aabb points'
+    Node aabb q1 q2 q3 q4 -> do
+      q1' <- freeze q1
+      q2' <- freeze q2
+      q3' <- freeze q3
+      q4' <- freeze q4
+      pure $ INode aabb q1' q2' q3' q4'
 
 empty :: AABB -> IO QT
 empty aabb = emptyLeaf aabb >>= newIORef
 
 emptyLeaf :: AABB -> IO Node
-emptyLeaf aabb = Leaf <$> pure aabb <*> newIORef 0 <*> V.new (fromIntegral maxLeafPoints)
+emptyLeaf aabb = Leaf <$> pure aabb <*> newIORef 0 <*> VM.new (fromIntegral maxLeafPoints)
 
 aabbForQT :: QT -> IO AABB
 aabbForQT qt = do
@@ -120,27 +147,25 @@ insert p qt = do
     
       if cnt < maxLeafPoints
         then do
-          V.write points (fromIntegral cnt) p
+          VM.write points (fromIntegral cnt) p
           writeIORef cntRef (cnt + 1)
         else do
           node' <- Node
             <$> pure aabb
-            <*> (leaf q1 >>= newIORef)
-            <*> (leaf q2 >>= newIORef)
-            <*> (leaf q3 >>= newIORef)
-            <*> (leaf q4 >>= newIORef)
+            <*> (emptyLeaf q1 >>= newIORef)
+            <*> (emptyLeaf q2 >>= newIORef)
+            <*> (emptyLeaf q3 >>= newIORef)
+            <*> (emptyLeaf q4 >>= newIORef)
           writeIORef qt node'
+
+          fpoints <- V.unsafeFreeze points
+          V.forM_ fpoints $ \p -> insert p qt
+          insert p qt
       where
         (q1, q2, q3, q4) = splitAABB aabb
-    
-        leaf naabb = if insideAABB naabb p
-          then do
-            cntRef <- newIORef 1
-            points <- V.new (fromIntegral maxLeafPoints)
-            V.write points 0 p
-            pure (Leaf naabb cntRef points)
-          else
-            emptyLeaf naabb
+
+delete :: Point -> QT -> IO ()
+delete = undefined
 
 query :: AABB -> QT -> IO [Point]
 query aabb qt = do
@@ -161,24 +186,51 @@ query aabb qt = do
 
 someFunc :: IO ()
 someFunc = do
-  qt <- empty (AABB (Point 0 0) (Point 1000 1000))
+  qt <- empty (AABB (Point 0 0) (Point 1000000 1000000))
 
-  rps <- flip traverse [0..1000] $ \_ -> do
-    x <- randomRIO (0, 999)
-    y <- randomRIO (0, 999)
+  -- rps <- flip traverse [0..10000000] $ \_ -> do
+  --   x <- randomRIO (0, 999999)
+  --   y <- randomRIO (0, 999999)
 
-    pure (Point x y)
+  --   pure (Point x y)
 
-  sequence_ $ flip map rps $ \p -> insert p qt
+  -- putStrLn "Building QT..."
+  -- sequence_ $ flip map rps $ \p -> insert p qt
 
-  let aabb = AABB (Point 100 100) (Point 200 200)
+  putStrLn "Building QT..."
+  replicateM 10000000 $ do
+    x <- randomRIO (0, 999999)
+    y <- randomRIO (0, 999999)
 
-  ps1 <- L.sort <$> query aabb qt
-  ps2 <- fmap L.sort $ pure $ filter (insideAABB aabb) rps
+    insert (Point x y) qt
 
-  print ps1
-  print ps2
+  putStrLn "Saving QT..."
+  fqt <- freeze qt
 
-  print "Done"
-  print (ps1 == ps2)
+  BL.writeFile "tree.bin" $ B.encodeLazy fqt
+
+  putStrLn "Query QT..."
+  _ <- flip traverse [0..1000000] $ \i -> do
+    x <- randomRIO (0, 900000)
+    y <- randomRIO (0, 900000)
+    let aabb = AABB (Point x y) (Point (x + 2000) (y + 2000))
+
+    ps1 <- L.sort <$> query aabb qt
+
+    if (i `mod` 100000) == 0
+      then print $ (show i) <> ", " <> (show $ length ps1)
+      else pure ()
+
+  -- let aabb = AABB (Point 100 100) (Point 1000 1000)
+
+  -- ps1 <- L.sort <$> query aabb qt
+  -- ps2 <- fmap L.sort $ pure $ filter (insideAABB aabb) rps
+
+  -- print ps1
+  -- print ps2
+
+  -- print "Done"
+  -- print (ps1 == ps2)
+
+  pure ()
   
