@@ -214,7 +214,7 @@ insert p qt = do
         else do
           node' <- Node
             <$> pure aabb
-            <*> newMutVar 1
+            <*> newMutVar 0
             <*> (emptyLeaf q1 >>= newIORef)
             <*> (emptyLeaf q2 >>= newIORef)
             <*> (emptyLeaf q3 >>= newIORef)
@@ -342,8 +342,8 @@ someFunc = do
 
   putStrLn "Building QT..."
   replicateM 10000000 $ do
-    x <- randomRIO (0, 999999)
-    y <- randomRIO (0, 999999)
+    x <- randomRIO (0, 999)
+    y <- randomRIO (0, 999)
 
     insert (Point x y) qt
 
@@ -353,8 +353,8 @@ someFunc = do
 
   putStrLn "Deleting points..."
   replicateM 10000000 $ do
-    x <- randomRIO (0, 999999)
-    y <- randomRIO (0, 999999)
+    x <- randomRIO (0, 999)
+    y <- randomRIO (0, 999)
 
     delete (Point x y) qt
 
@@ -362,8 +362,8 @@ someFunc = do
 
   putStrLn "Querying QT..."
   _ <- flip traverse [0..1000000] $ \i -> do
-    x <- randomRIO (0, 900000)
-    y <- randomRIO (0, 900000)
+    x <- randomRIO (0, 500)
+    y <- randomRIO (0, 500)
     let aabb = AABB (Point x y) (Point (x + 2000) (y + 2000))
 
     ps1 <- L.sort <$> query aabb qt
