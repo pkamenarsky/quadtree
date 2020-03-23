@@ -1,6 +1,7 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 -- {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE MagicHash #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -71,12 +72,28 @@ splitAABB (AABB (Point x1 y1) (Point x2 y2))
 
 --------------------------------------------------------------------------------
 
+newtype MutVar a = MutVar (VM.IOVector a)
+
+newMutVar :: V.Unbox a => a -> IO (MutVar a)
+newMutVar a = do
+  v <- VM.new 1
+  VM.write v 0 a
+  pure (MutVar v)
+
+readMutVar :: V.Unbox a => MutVar a -> IO a
+readMutVar (MutVar v) = VM.read v 0
+
+writeMutVar :: V.Unbox a => MutVar a -> a -> IO ()
+writeMutVar (MutVar v) a = VM.write v 0 a
+
+--------------------------------------------------------------------------------
+
 maxLeafPoints :: Word8
 maxLeafPoints = 100
 
 data Node
-  = Node !AABB !(IORef Word32) !QT !QT !QT !QT 
-  | Leaf !AABB !(IORef Word8) !(VM.IOVector Point)
+  = Node !AABB !(MutVar Word32) !QT !QT !QT !QT 
+  | Leaf !AABB !(MutVar Word8) !(VM.IOVector Point)
 
 type QT = IORef Node
 
@@ -91,11 +108,11 @@ freeze qt = do
 
   case node of
     Leaf aabb cntRef points -> do
-      cnt <- readIORef cntRef
+      cnt <- readMutVar cntRef
       points' <- V.freeze $ VM.slice 0 (fromIntegral cnt) points
       pure $ ILeaf aabb points'
     Node aabb cntRef q1 q2 q3 q4 -> do
-      cnt <- readIORef cntRef
+      cnt <- readMutVar cntRef
       q1' <- freeze q1
       q2' <- freeze q2
       q3' <- freeze q3
@@ -105,7 +122,7 @@ freeze qt = do
 thaw :: INode -> IO QT
 thaw (ILeaf aabb points) = do
   points' <- V.thaw points
-  cntRef  <- newIORef (fromIntegral $ V.length points)
+  cntRef  <- newMutVar (fromIntegral $ V.length points)
 
   VM.grow points' (fromIntegral maxLeafPoints - V.length points)
 
@@ -116,7 +133,7 @@ thaw (INode aabb cnt q1 q2 q3 q4) = do
   q3' <- thaw q3
   q4' <- thaw q4
 
-  cntRef <- newIORef cnt
+  cntRef <- newMutVar cnt
 
   newIORef $ Node aabb cntRef q1' q2' q3' q4'
 
@@ -127,11 +144,11 @@ size :: QT -> IO Word32
 size qt = do
   node <- readIORef qt
   case node of
-    (Leaf _ cntRef _) -> fromIntegral <$> readIORef cntRef
-    (Node _ cntRef _ _ _ _) -> fromIntegral <$> readIORef cntRef
+    (Leaf _ cntRef _) -> fromIntegral <$> readMutVar cntRef
+    (Node _ cntRef _ _ _ _) -> fromIntegral <$> readMutVar cntRef
 
 emptyLeaf :: AABB -> IO Node
-emptyLeaf aabb = Leaf <$> pure aabb <*> newIORef 0 <*> VM.new (fromIntegral maxLeafPoints)
+emptyLeaf aabb = Leaf <$> pure aabb <*> newMutVar 0 <*> VM.new (fromIntegral maxLeafPoints)
 
 aabbForQT :: QT -> IO AABB
 aabbForQT qt = do
@@ -169,25 +186,26 @@ insert p qt = do
       where
         insert' cntRef p qt = do
           r <- insert p qt
-          -- TODO: why is this so slow?
-          when r $ modifyIORef' cntRef ((+1) $!)
+          when r $ do
+            cnt <- readMutVar cntRef
+            writeMutVar cntRef (cnt + 1)
           pure r
 
     (Leaf aabb cntRef points) -> do
       unless (insideAABB aabb p) $
         error $ "Out of bounds (leaf): " <> show aabb <> ", " <> show p
         
-      cnt <- readIORef cntRef
+      cnt <- readMutVar cntRef
     
       if cnt < maxLeafPoints
         then do
           VM.write points (fromIntegral cnt) p
-          writeIORef cntRef (cnt + 1)
+          writeMutVar cntRef (cnt + 1)
           pure True
         else do
           node' <- Node
             <$> pure aabb
-            <*> newIORef 0
+            <*> newMutVar 1
             <*> (emptyLeaf q1 >>= newIORef)
             <*> (emptyLeaf q2 >>= newIORef)
             <*> (emptyLeaf q3 >>= newIORef)
@@ -200,7 +218,7 @@ insert p qt = do
       where
         (q1, q2, q3, q4) = splitAABB aabb
 
-delete :: Point -> QT -> IO ()
+delete :: Point -> QT -> IO Bool
 delete = go Nothing
   where
     go parent p qt = do
@@ -209,13 +227,54 @@ delete = go Nothing
         Leaf aabb cntRef points -> do
           if insideAABB aabb p
             then do
-              cnt <- readIORef cntRef
+              cnt <- readMutVar cntRef
               i <- find points (fromIntegral cnt) p
               case i of
-                Just i' -> undefined
-                Nothing -> pure ()
-            else undefined
-        Node _ _ _ _ _ _ -> undefined
+                Just i' -> do
+                  remove points (fromIntegral cnt) i'
+                  writeMutVar cntRef (cnt - 1)
+                  pure True
+                Nothing -> pure False
+            else pure False
+        Node aabb cntRef q1 q2 q3 q4 -> do
+          d1 <- delete p q1
+          d2 <- unlessDef True d1 (delete p q2)
+          d3 <- unlessDef True d2 (delete p q3)
+          d4 <- unlessDef True d3 (delete p q4)
+
+          cnt <- readMutVar cntRef
+
+          if (d1 || d2 || d3 || d4)
+            then do
+              mkLeaf aabb qt (fromIntegral (cnt - 1))
+              pure True
+            else
+              pure False
+
+          where
+            mkLeaf aabb qt cnt = when (cnt <= maxLeafPoints) $ do
+              points <- VM.new (fromIntegral maxLeafPoints)
+              cnt <- collectPoints points 0 qt
+              cntRef <- newMutVar (fromIntegral cnt)
+              writeIORef qt (Leaf aabb cntRef points)
+
+unlessDef :: Applicative f => a -> Bool -> f a -> f a
+unlessDef a t m = if not t then m else pure a
+
+collectPoints :: VM.IOVector Point -> Int -> QT -> IO Int
+collectPoints v i qt = do
+  node <- readIORef qt
+
+  case node of
+    Leaf _ cntRef points -> do
+      cnt <- readMutVar cntRef
+      VM.copy (VM.slice i (fromIntegral cnt) v) (VM.slice 0 (fromIntegral cnt) points)
+      pure (i + fromIntegral cnt)
+    Node _ _ q1 q2 q3 q4 -> do
+      r1 <- collectPoints v i q1
+      r2 <- collectPoints v r1 q1
+      r3 <- collectPoints v r2 q1
+      collectPoints v r3 q1
 
 remove :: VM.Unbox a => VM.IOVector a -> Int -> Int -> IO ()
 remove v l i = VM.move to from
