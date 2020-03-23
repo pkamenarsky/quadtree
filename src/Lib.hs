@@ -101,6 +101,22 @@ freeze qt = do
       q4' <- freeze q4
       pure $ INode aabb q1' q2' q3' q4'
 
+thaw :: INode -> IO QT
+thaw (ILeaf aabb points) = do
+  points' <- V.thaw points
+  cntRef  <- newIORef (fromIntegral $ V.length points)
+
+  VM.grow points' (fromIntegral maxLeafPoints - V.length points)
+
+  newIORef $ Leaf aabb cntRef points'
+thaw (INode aabb q1 q2 q3 q4) = do
+  q1' <- thaw q1
+  q2' <- thaw q2
+  q3' <- thaw q3
+  q4' <- thaw q4
+
+  newIORef $ Node aabb q1' q2' q3' q4'
+
 empty :: AABB -> IO QT
 empty aabb = emptyLeaf aabb >>= newIORef
 
@@ -114,7 +130,9 @@ aabbForQT qt = do
     Node aabb _ _ _ _ -> pure aabb
     Leaf aabb _ _ -> pure aabb
 
+-- TODO: remove errors
 -- TODO: descent test aabb on every node or every leaf?
+
 insert :: Point -> QT -> IO ()
 insert p qt = do
   node <- readIORef qt
@@ -165,7 +183,33 @@ insert p qt = do
         (q1, q2, q3, q4) = splitAABB aabb
 
 delete :: Point -> QT -> IO ()
-delete = undefined
+delete = go Nothing
+  where
+    go parent p qt = do
+      node <- readIORef qt
+      case node of
+        Leaf _ _ _ -> undefined
+        Node _ _ _ _ _ -> undefined
+
+remove :: VM.Unbox a => VM.IOVector a -> Int -> IO ()
+remove v i = VM.move to from
+  where
+    to   = VM.slice i (l - i - 1) v
+    from = VM.slice (i + 1) (l - i - 1) v
+
+    l    = VM.length v
+
+find :: VM.Unbox a => Eq a => VM.IOVector a -> a -> IO (Maybe Int)
+find v a = go 0
+  where
+    l = VM.length v
+    go i
+      | i < l = do
+          b <- VM.read v i
+          if a == b
+            then pure (Just i)
+            else go (i + 1)
+      | otherwise = pure Nothing
 
 query :: AABB -> QT -> IO [Point]
 query aabb qt = do
@@ -204,10 +248,9 @@ someFunc = do
 
     insert (Point x y) qt
 
-  putStrLn "Saving QT..."
-  fqt <- freeze qt
-
-  BL.writeFile "tree.bin" $ B.encodeLazy fqt
+  -- putStrLn "Saving QT..."
+  -- fqt <- freeze qt
+  -- BL.writeFile "tree.bin" $ B.encodeLazy fqt
 
   putStrLn "Query QT..."
   _ <- flip traverse [0..1000000] $ \i -> do
