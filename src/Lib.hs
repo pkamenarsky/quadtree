@@ -117,6 +117,7 @@ freeze qt = do
       cnt <- readMutVar cntRef
       points' <- V.freeze $ VM.slice 0 (fromIntegral cnt) points
       pure $ ILeaf aabb points'
+
     Node aabb cntRef q1 q2 q3 q4 -> do
       cnt <- readMutVar cntRef
       q1' <- freeze q1
@@ -150,11 +151,12 @@ size :: QT -> IO Word32
 size qt = do
   node <- readIORef qt
   case node of
-    (Leaf _ cntRef _) -> fromIntegral <$> readMutVar cntRef
-    (Node _ cntRef _ _ _ _) -> fromIntegral <$> readMutVar cntRef
+    Leaf _ cntRef _ -> fromIntegral <$> readMutVar cntRef
+    Node _ cntRef _ _ _ _ -> fromIntegral <$> readMutVar cntRef
 
 emptyLeaf :: AABB -> IO Node
-emptyLeaf aabb = Leaf <$> pure aabb <*> newMutVar 0 <*> VM.new (fromIntegral maxLeafPoints)
+emptyLeaf aabb
+  = Leaf <$> pure aabb <*> newMutVar 0 <*> VM.new (fromIntegral maxLeafPoints)
 
 {-# INLINE aabbForQT #-}
 aabbForQT :: QT -> IO AABB
@@ -172,7 +174,7 @@ insert p qt = do
   node <- readIORef qt
 
   case node of
-    (Node aabb cntRef q1 q2 q3 q4) -> do
+    Node aabb cntRef q1 q2 q3 q4 -> do
       aabb <- aabbForQT q1
       if insideAABB aabb p
         then insert' cntRef p q1
@@ -198,7 +200,7 @@ insert p qt = do
             writeMutVar cntRef (cnt + 1)
           pure r
 
-    (Leaf aabb cntRef points) -> do
+    Leaf aabb cntRef points -> do
       unless (insideAABB aabb p) $
         error $ "Out of bounds (leaf): " <> show aabb <> ", " <> show p
         
@@ -226,44 +228,48 @@ insert p qt = do
         (# q1, q2, q3, q4 #) = splitAABB aabb
 
 delete :: Point -> QT -> IO Bool
-delete = go Nothing
-  where
-    go parent p qt = do
-      node <- readIORef qt
-      case node of
-        Leaf aabb cntRef points -> do
-          if insideAABB aabb p
-            then do
-              cnt <- readMutVar cntRef
-              i <- find points (fromIntegral cnt) p
-              case i of
-                Just i' -> do
-                  remove points (fromIntegral cnt) i'
-                  writeMutVar cntRef (cnt - 1)
-                  pure True
-                Nothing -> pure False
-            else pure False
-        Node aabb cntRef q1 q2 q3 q4 -> do
-          d1 <- delete p q1
-          d2 <- unlessDef True d1 (delete p q2)
-          d3 <- unlessDef True d2 (delete p q3)
-          d4 <- unlessDef True d3 (delete p q4)
+delete p qt = do
+  node <- readIORef qt
 
-          cnt <- readMutVar cntRef
+  case node of
+    Leaf aabb cntRef points -> if insideAABB aabb p
+      then do
+        cnt <- readMutVar cntRef
+        i <- find points (fromIntegral cnt) p
+        case i of
+          Just i' -> do
+            remove points (fromIntegral cnt) i'
+            writeMutVar cntRef (cnt - 1)
+            pure True
+          Nothing -> pure False
+      else
+        pure False
 
-          if (d1 || d2 || d3 || d4)
-            then do
-              mkLeaf aabb qt (fromIntegral (cnt - 1))
-              pure True
-            else
-              pure False
+    -- TODO: if this is inside, point must be inside, no need for checks
+    Node aabb cntRef q1 q2 q3 q4 -> if insideAABB aabb p
+      then do
+        d1 <- delete p q1
+        d2 <- unlessDef True d1 (delete p q2)
+        d3 <- unlessDef True d2 (delete p q3)
+        d4 <- unlessDef True d3 (delete p q4)
 
-          where
-            mkLeaf aabb qt cnt = when (cnt <= maxLeafPoints) $ do
-              points <- VM.new (fromIntegral maxLeafPoints)
-              cnt <- collectPoints points 0 qt
-              cntRef <- newMutVar (fromIntegral cnt)
+        if (d1 || d2 || d3 || d4)
+          then do
+            cnt <- readMutVar cntRef
+            writeMutVar cntRef (cnt - 1)
+
+            when (fromIntegral (cnt - 1) <= maxLeafPoints) $ do
+              points  <- VM.new (fromIntegral maxLeafPoints)
+              collCnt <- collectPoints points 0 qt
+              cntRef  <- newMutVar (fromIntegral collCnt)
+
               writeIORef qt (Leaf aabb cntRef points)
+
+            pure True
+          else
+            pure False
+      else
+        pure False
 
 {-# INLINE unlessDef #-}
 unlessDef :: Applicative f => a -> Bool -> f a -> f a
@@ -278,11 +284,12 @@ collectPoints v i qt = do
       cnt <- readMutVar cntRef
       VM.copy (VM.slice i (fromIntegral cnt) v) (VM.slice 0 (fromIntegral cnt) points)
       pure (i + fromIntegral cnt)
+
     Node _ _ q1 q2 q3 q4 -> do
       r1 <- collectPoints v i q1
-      r2 <- collectPoints v r1 q1
-      r3 <- collectPoints v r2 q1
-      collectPoints v r3 q1
+      r2 <- collectPoints v r1 q2
+      r3 <- collectPoints v r2 q3
+      collectPoints v r3 q4
 
 {-# INLINE remove #-}
 remove :: VM.Unbox a => VM.IOVector a -> Int -> Int -> IO ()
@@ -344,9 +351,16 @@ someFunc = do
   -- fqt <- freeze qt
   -- BL.writeFile "tree.bin" $ B.encodeLazy fqt
 
+  putStrLn "Deleting points..."
+  replicateM 10000000 $ do
+    x <- randomRIO (0, 999999)
+    y <- randomRIO (0, 999999)
+
+    delete (Point x y) qt
+
   print =<< size qt
 
-  putStrLn "Query QT..."
+  putStrLn "Querying QT..."
   _ <- flip traverse [0..1000000] $ \i -> do
     x <- randomRIO (0, 900000)
     y <- randomRIO (0, 900000)
