@@ -169,7 +169,8 @@ insert p qt = do
       where
         insert' cntRef p qt = do
           r <- insert p qt
-          when r $ modifyIORef cntRef (+1)
+          -- TODO: why is this so slow?
+          when r $ modifyIORef' cntRef ((+1) $!)
           pure r
 
     (Leaf aabb cntRef points) -> do
