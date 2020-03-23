@@ -1,7 +1,7 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 -- {-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE MagicHash #-}
+{-# LANGUAGE UnboxedTuples #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -45,11 +45,13 @@ V.derivingUnbox "AABB"
   [| \(AABB x y) -> (x, y) |]
   [| \(x, y) -> AABB x y |]
 
+{-# INLINE insideAABB #-}
 insideAABB :: AABB -> Point -> Bool
 insideAABB (AABB (Point x1 y1) (Point x2 y2)) (Point x y)
   | x < x1 || x >= x2 || y < y1 || y >= y2 = False
   | otherwise = True
 
+{-# INLINE overlapAABB #-}
 overlapAABB :: AABB -> AABB -> Bool
 overlapAABB
   (AABB (Point x1 y1) (Point x2 y2))
@@ -57,15 +59,16 @@ overlapAABB
   | x1 >= u2 || x2 <= u1 || y1 >= v2 || y2 <= v1 = False
   | otherwise = True
 
-splitAABB :: AABB -> (AABB, AABB, AABB, AABB)
+{-# INLINE splitAABB #-}
+splitAABB :: AABB -> (# AABB, AABB, AABB, AABB #)
 splitAABB (AABB (Point x1 y1) (Point x2 y2))
   | x1 == xh || y1 == yh = error "AABB too small"
   | otherwise =
-    ( (AABB (Point x1 y1) (Point xh yh))
-    , (AABB (Point xh y1) (Point x2 yh))
-    , (AABB (Point x1 yh) (Point xh y2))
-    , (AABB (Point xh yh) (Point x2 y2))
-    )
+    (# (AABB (Point x1 y1) (Point xh yh))
+    ,  (AABB (Point xh y1) (Point x2 yh))
+    ,  (AABB (Point x1 yh) (Point xh y2))
+    ,  (AABB (Point xh yh) (Point x2 y2))
+    #)
   where
     xh = (x1 + x2) `div` 2
     yh = (y1 + y2) `div` 2
@@ -74,15 +77,18 @@ splitAABB (AABB (Point x1 y1) (Point x2 y2))
 
 newtype MutVar a = MutVar (VM.IOVector a)
 
+{-# INLINE newMutVar #-}
 newMutVar :: V.Unbox a => a -> IO (MutVar a)
 newMutVar a = do
   v <- VM.new 1
   VM.write v 0 a
   pure (MutVar v)
 
+{-# INLINE readMutVar #-}
 readMutVar :: V.Unbox a => MutVar a -> IO a
 readMutVar (MutVar v) = VM.read v 0
 
+{-# INLINE writeMutVar #-}
 writeMutVar :: V.Unbox a => MutVar a -> a -> IO ()
 writeMutVar (MutVar v) a = VM.write v 0 a
 
@@ -150,6 +156,7 @@ size qt = do
 emptyLeaf :: AABB -> IO Node
 emptyLeaf aabb = Leaf <$> pure aabb <*> newMutVar 0 <*> VM.new (fromIntegral maxLeafPoints)
 
+{-# INLINE aabbForQT #-}
 aabbForQT :: QT -> IO AABB
 aabbForQT qt = do
   node <- readIORef qt
@@ -216,7 +223,7 @@ insert p qt = do
           V.forM_ fpoints $ \p -> insert p qt
           insert p qt
       where
-        (q1, q2, q3, q4) = splitAABB aabb
+        (# q1, q2, q3, q4 #) = splitAABB aabb
 
 delete :: Point -> QT -> IO Bool
 delete = go Nothing
@@ -258,6 +265,7 @@ delete = go Nothing
               cntRef <- newMutVar (fromIntegral cnt)
               writeIORef qt (Leaf aabb cntRef points)
 
+{-# INLINE unlessDef #-}
 unlessDef :: Applicative f => a -> Bool -> f a -> f a
 unlessDef a t m = if not t then m else pure a
 
@@ -276,12 +284,14 @@ collectPoints v i qt = do
       r3 <- collectPoints v r2 q1
       collectPoints v r3 q1
 
+{-# INLINE remove #-}
 remove :: VM.Unbox a => VM.IOVector a -> Int -> Int -> IO ()
 remove v l i = VM.move to from
   where
     to   = VM.slice i (l - i - 1) v
     from = VM.slice (i + 1) (l - i - 1) v
 
+{-# INLINE find #-}
 find :: VM.Unbox a => Eq a => VM.IOVector a -> Int -> a -> IO (Maybe Int)
 find v l a = go 0
   where
