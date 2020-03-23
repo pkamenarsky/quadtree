@@ -7,7 +7,7 @@
 
 module Lib where
 
-import Control.Monad (replicateM)
+import Control.Monad (replicateM, when, unless)
 
 import Data.IORef
 import qualified Data.ByteString.Lazy as BL
@@ -75,13 +75,13 @@ maxLeafPoints :: Word8
 maxLeafPoints = 100
 
 data Node
-  = Node !AABB !QT !QT !QT !QT 
+  = Node !AABB !(IORef Word32) !QT !QT !QT !QT 
   | Leaf !AABB !(IORef Word8) !(VM.IOVector Point)
 
 type QT = IORef Node
 
 data INode
-  = INode AABB INode INode INode INode
+  = INode AABB Word32 INode INode INode INode
   | ILeaf AABB (V.Vector Point)
   deriving (Generic, B.Serialize)
 
@@ -94,12 +94,13 @@ freeze qt = do
       cnt <- readIORef cntRef
       points' <- V.freeze $ VM.slice 0 (fromIntegral cnt) points
       pure $ ILeaf aabb points'
-    Node aabb q1 q2 q3 q4 -> do
+    Node aabb cntRef q1 q2 q3 q4 -> do
+      cnt <- readIORef cntRef
       q1' <- freeze q1
       q2' <- freeze q2
       q3' <- freeze q3
       q4' <- freeze q4
-      pure $ INode aabb q1' q2' q3' q4'
+      pure $ INode aabb cnt q1' q2' q3' q4'
 
 thaw :: INode -> IO QT
 thaw (ILeaf aabb points) = do
@@ -109,16 +110,25 @@ thaw (ILeaf aabb points) = do
   VM.grow points' (fromIntegral maxLeafPoints - V.length points)
 
   newIORef $ Leaf aabb cntRef points'
-thaw (INode aabb q1 q2 q3 q4) = do
+thaw (INode aabb cnt q1 q2 q3 q4) = do
   q1' <- thaw q1
   q2' <- thaw q2
   q3' <- thaw q3
   q4' <- thaw q4
 
-  newIORef $ Node aabb q1' q2' q3' q4'
+  cntRef <- newIORef cnt
+
+  newIORef $ Node aabb cntRef q1' q2' q3' q4'
 
 empty :: AABB -> IO QT
 empty aabb = emptyLeaf aabb >>= newIORef
+
+size :: QT -> IO Word32
+size qt = do
+  node <- readIORef qt
+  case node of
+    (Leaf _ cntRef _) -> fromIntegral <$> readIORef cntRef
+    (Node _ cntRef _ _ _ _) -> fromIntegral <$> readIORef cntRef
 
 emptyLeaf :: AABB -> IO Node
 emptyLeaf aabb = Leaf <$> pure aabb <*> newIORef 0 <*> VM.new (fromIntegral maxLeafPoints)
@@ -127,39 +137,44 @@ aabbForQT :: QT -> IO AABB
 aabbForQT qt = do
   node <- readIORef qt
   case node of
-    Node aabb _ _ _ _ -> pure aabb
+    Node aabb _ _ _ _ _ -> pure aabb
     Leaf aabb _ _ -> pure aabb
 
 -- TODO: remove errors
 -- TODO: descent test aabb on every node or every leaf?
 
-insert :: Point -> QT -> IO ()
+insert :: Point -> QT -> IO Bool
 insert p qt = do
   node <- readIORef qt
 
   case node of
-    (Node aabb q1 q2 q3 q4) -> do
+    (Node aabb cntRef q1 q2 q3 q4) -> do
       aabb <- aabbForQT q1
       if insideAABB aabb p
-        then insert p q1
+        then insert' cntRef p q1
         else do
           aabb <- aabbForQT q2
           if insideAABB aabb p
-            then insert p q2
+            then insert' cntRef p q2
             else do
               aabb <- aabbForQT q3
               if insideAABB aabb p
-                then insert p q3
+                then insert' cntRef p q3
                 else do
                   aabb <- aabbForQT q4
                   if insideAABB aabb p
-                    then insert p q4
+                    then insert' cntRef p q4
+                    -- else pure False
                     else error $ "Out of bounds (node): " <> show aabb <> ", " <> show p
+      where
+        insert' cntRef p qt = do
+          r <- insert p qt
+          when r $ modifyIORef cntRef (+1)
+          pure r
 
     (Leaf aabb cntRef points) -> do
-      if insideAABB aabb p
-        then pure ()
-        else error $ "Out of bounds (leaf): " <> show aabb <> ", " <> show p
+      unless (insideAABB aabb p) $
+        error $ "Out of bounds (leaf): " <> show aabb <> ", " <> show p
         
       cnt <- readIORef cntRef
     
@@ -167,9 +182,11 @@ insert p qt = do
         then do
           VM.write points (fromIntegral cnt) p
           writeIORef cntRef (cnt + 1)
+          pure True
         else do
           node' <- Node
             <$> pure aabb
+            <*> newIORef 0
             <*> (emptyLeaf q1 >>= newIORef)
             <*> (emptyLeaf q2 >>= newIORef)
             <*> (emptyLeaf q3 >>= newIORef)
@@ -188,21 +205,26 @@ delete = go Nothing
     go parent p qt = do
       node <- readIORef qt
       case node of
-        Leaf _ _ _ -> undefined
-        Node _ _ _ _ _ -> undefined
+        Leaf aabb cntRef points -> do
+          if insideAABB aabb p
+            then do
+              cnt <- readIORef cntRef
+              i <- find points (fromIntegral cnt) p
+              case i of
+                Just i' -> undefined
+                Nothing -> pure ()
+            else undefined
+        Node _ _ _ _ _ _ -> undefined
 
-remove :: VM.Unbox a => VM.IOVector a -> Int -> IO ()
-remove v i = VM.move to from
+remove :: VM.Unbox a => VM.IOVector a -> Int -> Int -> IO ()
+remove v l i = VM.move to from
   where
     to   = VM.slice i (l - i - 1) v
     from = VM.slice (i + 1) (l - i - 1) v
 
-    l    = VM.length v
-
-find :: VM.Unbox a => Eq a => VM.IOVector a -> a -> IO (Maybe Int)
-find v a = go 0
+find :: VM.Unbox a => Eq a => VM.IOVector a -> Int -> a -> IO (Maybe Int)
+find v l a = go 0
   where
-    l = VM.length v
     go i
       | i < l = do
           b <- VM.read v i
@@ -222,7 +244,7 @@ query aabb qt = do
         pure $ filter (insideAABB aabb) $ V.toList points'
       else
         pure []
-    Node naabb q1 q2 q3 q4 -> if overlapAABB aabb naabb
+    Node naabb _ q1 q2 q3 q4 -> if overlapAABB aabb naabb
       then
         mconcat <$> traverse (query aabb) [q1, q2, q3, q4]
       else
@@ -251,6 +273,8 @@ someFunc = do
   -- putStrLn "Saving QT..."
   -- fqt <- freeze qt
   -- BL.writeFile "tree.bin" $ B.encodeLazy fqt
+
+  print =<< size qt
 
   putStrLn "Query QT..."
   _ <- flip traverse [0..1000000] $ \i -> do
