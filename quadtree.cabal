@@ -4,16 +4,16 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: a6471aa4eb7f6622c380ee257fb81225a3d9be1a622848a52c640c0e0e5a75bf
+-- hash: ea977227426f3258a988c3b86883c35381f711ca814e64a00b242021066110d3
 
-name:           kdtree
+name:           quadtree
 version:        0.1.0.0
-description:    Please see the README on GitHub at <https://github.com/githubuser/kdtree#readme>
-homepage:       https://github.com/githubuser/kdtree#readme
-bug-reports:    https://github.com/githubuser/kdtree/issues
-author:         Author name here
+description:    Please see the README on GitHub at <https://github.com/pkamenarsky/quadtree#readme>
+homepage:       https://github.com/pkamenarsky/quadtree#readme
+bug-reports:    https://github.com/pkamenarsky/quadtree/issues
+author:         Philip Kamenarsky
 maintainer:     example@example.com
-copyright:      2020 Author name here
+copyright:      2020 Philip Kamenarsky
 license:        BSD3
 license-file:   LICENSE
 build-type:     Simple
@@ -23,13 +23,13 @@ extra-source-files:
 
 source-repository head
   type: git
-  location: https://github.com/githubuser/kdtree
+  location: https://github.com/pkamenarsky/quadtree
 
 library
   exposed-modules:
       Lib
   other-modules:
-      Paths_kdtree
+      Paths_quadtree
   hs-source-dirs:
       src
   build-depends:
@@ -43,10 +43,10 @@ library
     , vector-th-unbox
   default-language: Haskell2010
 
-executable kdtree-exe
+executable quadtree-exe
   main-is: Main.hs
   other-modules:
-      Paths_kdtree
+      Paths_quadtree
   hs-source-dirs:
       app
   ghc-options: -O2 -threaded -rtsopts -with-rtsopts=-N
@@ -56,17 +56,17 @@ executable kdtree-exe
     , cereal
     , cereal-vector
     , containers
-    , kdtree
+    , quadtree
     , random
     , vector
     , vector-th-unbox
   default-language: Haskell2010
 
-test-suite kdtree-test
+test-suite quadtree-test
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   other-modules:
-      Paths_kdtree
+      Paths_quadtree
   hs-source-dirs:
       test
   ghc-options: -threaded -rtsopts -with-rtsopts=-N
@@ -76,7 +76,7 @@ test-suite kdtree-test
     , cereal
     , cereal-vector
     , containers
-    , kdtree
+    , quadtree
     , random
     , vector
     , vector-th-unbox
