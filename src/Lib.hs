@@ -1,7 +1,6 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 -- {-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE UnboxedTuples #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -60,15 +59,15 @@ overlapAABB
   | otherwise = True
 
 {-# INLINE splitAABB #-}
-splitAABB :: AABB -> (# AABB, AABB, AABB, AABB #)
+splitAABB :: AABB -> (AABB, AABB, AABB, AABB)
 splitAABB (AABB (Point x1 y1) (Point x2 y2))
   | x1 == xh || y1 == yh = error "AABB too small"
   | otherwise =
-    (# (AABB (Point x1 y1) (Point xh yh))
-    ,  (AABB (Point xh y1) (Point x2 yh))
-    ,  (AABB (Point x1 yh) (Point xh y2))
-    ,  (AABB (Point xh yh) (Point x2 y2))
-    #)
+    ( (AABB (Point x1 y1) (Point xh yh))
+    , (AABB (Point xh y1) (Point x2 yh))
+    , (AABB (Point x1 yh) (Point xh y2))
+    , (AABB (Point xh yh) (Point x2 y2))
+    )
   where
     xh = (x1 + x2) `div` 2
     yh = (y1 + y2) `div` 2
@@ -174,58 +173,50 @@ insert p qt = do
   node <- readIORef qt
 
   case node of
-    Node aabb cntRef q1 q2 q3 q4 -> do
-      aabb <- aabbForQT q1
-      if insideAABB aabb p
-        then insert' cntRef p q1
-        else do
-          aabb <- aabbForQT q2
-          if insideAABB aabb p
-            then insert' cntRef p q2
-            else do
-              aabb <- aabbForQT q3
-              if insideAABB aabb p
-                then insert' cntRef p q3
-                else do
-                  aabb <- aabbForQT q4
-                  if insideAABB aabb p
-                    then insert' cntRef p q4
-                    -- else pure False
-                    else error $ "Out of bounds (node): " <> show aabb <> ", " <> show p
-      where
-        insert' cntRef p qt = do
-          r <- insert p qt
-          when r $ do
+    Node aabb cntRef q1 q2 q3 q4 -> if insideAABB aabb p
+      then do
+        d1 <- insert p q1
+        d2 <- unlessDef False d1 (insert p q2)
+        d3 <- unlessDef False (d1 || d2) (insert p q3)
+        d4 <- unlessDef False (d1 || d2 || d3) (insert p q4)
+
+        if d1 || d2 || d3 || d4
+          then do
             cnt <- readMutVar cntRef
             writeMutVar cntRef (cnt + 1)
-          pure r
 
-    Leaf aabb cntRef points -> do
-      unless (insideAABB aabb p) $
-        error $ "Out of bounds (leaf): " <> show aabb <> ", " <> show p
-        
-      cnt <- readMutVar cntRef
+            pure True
+          else error "insert: leaf"
+      else
+        pure False
+
+    Leaf aabb cntRef points -> if insideAABB aabb p
+      then do
+        cnt <- readMutVar cntRef
     
-      if cnt < maxLeafPoints
-        then do
-          VM.write points (fromIntegral cnt) p
-          writeMutVar cntRef (cnt + 1)
-          pure True
-        else do
-          node' <- Node
-            <$> pure aabb
-            <*> newMutVar 0
-            <*> (emptyLeaf q1 >>= newIORef)
-            <*> (emptyLeaf q2 >>= newIORef)
-            <*> (emptyLeaf q3 >>= newIORef)
-            <*> (emptyLeaf q4 >>= newIORef)
-          writeIORef qt node'
+        if cnt < maxLeafPoints
+          then do
+            VM.write points (fromIntegral cnt) p
+            writeMutVar cntRef (cnt + 1)
+            pure True
+          else do
+            node' <- Node
+              <$> pure aabb
+              <*> newMutVar 0
+              <*> (emptyLeaf q1 >>= newIORef)
+              <*> (emptyLeaf q2 >>= newIORef)
+              <*> (emptyLeaf q3 >>= newIORef)
+              <*> (emptyLeaf q4 >>= newIORef)
 
-          fpoints <- V.unsafeFreeze points
-          V.forM_ fpoints $ \p -> insert p qt
-          insert p qt
+            writeIORef qt node'
+
+            points' <- V.unsafeFreeze points
+            V.forM_ points' $ \p -> insert p qt
+            insert p qt
+      else
+        pure False
       where
-        (# q1, q2, q3, q4 #) = splitAABB aabb
+        (q1, q2, q3, q4) = splitAABB aabb
 
 delete :: Point -> QT -> IO Bool
 delete p qt = do
@@ -249,9 +240,9 @@ delete p qt = do
     Node aabb cntRef q1 q2 q3 q4 -> if insideAABB aabb p
       then do
         d1 <- delete p q1
-        d2 <- unlessDef True d1 (delete p q2)
-        d3 <- unlessDef True d2 (delete p q3)
-        d4 <- unlessDef True d3 (delete p q4)
+        d2 <- unlessDef False d1 (delete p q2)
+        d3 <- unlessDef False (d1 || d2) (delete p q3)
+        d4 <- unlessDef False (d1 || d2 || d3) (delete p q4)
 
         if d1 || d2 || d3 || d4
           then do
@@ -310,53 +301,38 @@ find v l a = go 0
             else go (i + 1)
       | otherwise = pure Nothing
 
-query :: AABB -> QT -> IO [Point]
+query :: AABB -> QT -> IO (V.Vector Point)
 query aabb qt = do
   node <- readIORef qt
 
   case node of
-    Leaf naabb _ points -> if overlapAABB aabb naabb
+    Leaf naabb cntRef points -> if overlapAABB aabb naabb
       then do
-        points' <- V.freeze points
-        pure $ filter (insideAABB aabb) $ V.toList points'
+        cnt <- readMutVar cntRef
+        points' <- V.freeze $ VM.slice 0 (fromIntegral cnt) points
+        pure $ V.filter (insideAABB aabb) points'
       else
-        pure []
+        pure V.empty
     Node naabb _ q1 q2 q3 q4 -> if overlapAABB aabb naabb
       then
         mconcat <$> traverse (query aabb) [q1, q2, q3, q4]
       else
-        pure []
+        pure V.empty
 
-someFunc :: IO ()
-someFunc = do
+someFunc2 :: IO ()
+someFunc2 = do
   qt <- empty (AABB (Point 0 0) (Point 1000000 1000000))
-
-  -- rps <- flip traverse [0..10000000] $ \_ -> do
-  --   x <- randomRIO (0, 999999)
-  --   y <- randomRIO (0, 999999)
-
-  --   pure (Point x y)
-
-  -- putStrLn "Building QT..."
-  -- sequence_ $ flip map rps $ \p -> insert p qt
 
   putStrLn "Building QT..."
   replicateM 10000000 $ do
-    x <- randomRIO (0, 999)
-    y <- randomRIO (0, 999)
+    x <- randomRIO (0, 999999)
+    y <- randomRIO (0, 999999)
 
     insert (Point x y) qt
 
   -- putStrLn "Saving QT..."
   -- fqt <- freeze qt
   -- BL.writeFile "tree.bin" $ B.encodeLazy fqt
-
-  putStrLn "Deleting points..."
-  replicateM 10000000 $ do
-    x <- randomRIO (0, 999)
-    y <- randomRIO (0, 999)
-
-    delete (Point x y) qt
 
   print =<< size qt
 
@@ -366,22 +342,47 @@ someFunc = do
     y <- randomRIO (0, 500)
     let aabb = AABB (Point x y) (Point (x + 2000) (y + 2000))
 
-    ps1 <- L.sort <$> query aabb qt
+    ps1 <- query aabb qt
 
     if (i `mod` 100000) == 0
-      then print $ (show i) <> ", " <> (show $ length ps1)
+      then print $ (show i) <> ", " <> (show $ V.length ps1)
       else pure ()
 
-  -- let aabb = AABB (Point 100 100) (Point 1000 1000)
+  pure ()
+  
+someFunc :: IO ()
+someFunc = do
+  qt <- empty (AABB (Point 0 0) (Point 1000000 1000000))
+  ps <- replicateM 10000 $ do
+    x <- randomRIO (0, 999)
+    y <- randomRIO (0, 999)
 
-  -- ps1 <- L.sort <$> query aabb qt
-  -- ps2 <- fmap L.sort $ pure $ filter (insideAABB aabb) rps
+    pure (Point x y)
 
-  -- print ps1
-  -- print ps2
+  putStrLn "Building QT..."
+  flip traverse ps $ \p -> insert p qt
 
-  -- print "Done"
-  -- print (ps1 == ps2)
+  putStrLn "Deleting points..."
+  flip traverse (take 5000 ps) $ \p -> do
+    r <- delete p qt
+    unless r (print "Fail")
+
+  print =<< size qt
+
+  putStrLn "Querying QT..."
+  _ <- flip traverse [0..100000] $ \i -> do
+    x <- randomRIO (0, 500)
+    y <- randomRIO (0, 500)
+    let aabb = AABB (Point x y) (Point (x + 100) (y + 100))
+
+    ps1 <- L.sort . V.toList <$> query aabb qt
+    ps2 <- fmap L.sort $ pure $ filter (insideAABB aabb) (drop 5000 ps)
+
+    when (ps1 /= ps2) $ error "Diff"
+
+    if (i `mod` 10000) == 0
+      then print $ (show i) <> ", " <> (show $ length ps1)
+      else pure ()
 
   pure ()
   
