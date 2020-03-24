@@ -166,7 +166,6 @@ aabbForQT qt = do
     Leaf aabb _ _ -> pure aabb
 
 -- TODO: remove errors
--- TODO: descent test aabb on every node or every leaf?
 
 insert :: Point -> QT -> IO Bool
 insert p qt = do
@@ -385,4 +384,3 @@ someFunc = do
       else pure ()
 
   pure ()
-  
